@@ -13,13 +13,13 @@ def main():
     """Example usage of IsolationGrid class."""
     processor = IsolationGrid(
         group_size=1000,
-        voxel_x_size=1.0,
-        voxel_y_size=1.0,
+        voxel_x_size=3.0,
+        voxel_y_size=3.0,
         mode_probability_threshold=2,
         anomaly_threshold=0.5,
         min_points_for_mode=3,
         max_modes=2,
-        save_intermediate_files=True
+        save_intermediate_files=False
     )
     
     final_points, stats = processor.process('example_points.xyz')
