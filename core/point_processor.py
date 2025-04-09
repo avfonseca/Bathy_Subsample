@@ -247,6 +247,7 @@ class PointProcessor:
         high_anomaly_points = []
         mode_points = []
         low_prob_points = []
+        point_strengths = []
         
         # Initialize counters
         n_high_anomaly = 0
@@ -279,7 +280,8 @@ class PointProcessor:
                 high_anomaly_original = np.dot(high_anomaly_points_voxel, rotation_matrix.T) + mean_point
                 high_anomaly_points.extend(high_anomaly_original)
                 selected_points.extend(high_anomaly_original)
-            n_high_anomaly += len(high_anomaly_points_voxel)
+                point_strengths.extend([1] * len(high_anomaly_original))
+                n_high_anomaly += len(high_anomaly_original)
             
             # Get low anomaly points
             low_anomaly_mask = voxel_scores <= self.settings.anomaly_threshold
@@ -316,23 +318,25 @@ class PointProcessor:
 
                     n_extracted_modes +=1
 
-                    if(std_th == 0):
-                         outside_points = low_anomaly_points
-                    else:
-                        median_point = min(low_anomaly_points, key=lambda p: abs(p[2] - median))
-                        median_point_original = np.dot(median_point.reshape(1, -1), rotation_matrix.T) + mean_point
-                        mode_points.append(median_point_original[0])
-                        selected_points.append(median_point_original[0])
-                        
-                        # Keep points outside std limit
-                        
-                        outside_points = low_anomaly_points[abs(low_anomaly_points[:, 2] - median)/std_th > self.settings.mode_probability_threshold]
-                        
-                        if len(outside_points) > 0:
-                            outside_points_original = np.dot(outside_points, rotation_matrix.T) + mean_point
-                            low_prob_points.extend(outside_points_original)  # Track these points
-                            selected_points.extend(outside_points_original)
-                            n_outliers += len(outside_points)
+                    
+                    median_point = min(low_anomaly_points, key=lambda p: abs(p[2] - median))
+                    median_point_original = np.dot(median_point.reshape(1, -1), rotation_matrix.T) + mean_point
+                    mode_points.append(median_point_original[0])
+                    selected_points.append(median_point_original[0])
+                    
+                    # Keep points outside std limit
+                    mode_str = len(low_anomaly_points[abs(low_anomaly_points[:, 2] - median)/(std_th + 1e-10) <= self.settings.mode_probability_threshold])
+                    point_strengths.append(mode_str)
+
+
+                    outside_points = low_anomaly_points[abs(low_anomaly_points[:, 2] - median)/(std_th + 1e-10) > self.settings.mode_probability_threshold]
+                    
+                    if len(outside_points) > 0:
+                        outside_points_original = np.dot(outside_points, rotation_matrix.T) + mean_point
+                        low_prob_points.extend(outside_points_original)  # Track these points
+                        selected_points.extend(outside_points_original)
+                        n_outliers += len(outside_points)
+                        point_strengths.append(np.ones(len(outside_points)))
             
 
             
@@ -342,38 +346,71 @@ class PointProcessor:
                 std_ths = np.array([mode['std'] for mode in result['modes']]).reshape(-1, 1)
 
                 
-                for i in range(len(medians)):
-                        median_point = min(low_anomaly_points, key=lambda p: abs(p[2] - medians[i]))
-                        median_point_original = np.dot(median_point.reshape(1, -1), rotation_matrix.T) + mean_point
-                        mode_points.append(median_point_original[0])
-                        selected_points.append(median_point_original[0])
-                        n_extracted_modes += 1
-                
-
                 # Reshape depths for broadcasting
                 depths = low_anomaly_points[:, 2].reshape(1, -1)  # Shape: (1, n_points)
 
-                # Check if ALL normalized distances are > prob_threshold
-                outside_mask = np.all(abs(depths - medians) / std_ths > self.settings.mode_probability_threshold, axis=0)
+                # Calculate normalized distances for each point to each mode
+                normalized_distances = abs(depths - medians) / std_ths  # Shape: (n_modes, n_points)
+                
+                # For each point, determine which mode it belongs to
+                # A point belongs to a mode if:
+                # 1. Its normalized distance to that mode is <= threshold
+                # 2. It's closer to that mode than to any other mode
+                
+                # Initialize array to track which mode each point belongs to
+                point_mode_assignments = np.full(len(low_anomaly_points), -1)  # -1 means no mode assigned
+                
+                # For each point, find the closest mode
+                for i in range(len(low_anomaly_points)):
+                    # Get normalized distances to all modes for this point
+                    point_distances = normalized_distances[:, i]
+                    
+                    # Find the closest mode
+                    closest_mode_idx = np.argmin(point_distances)
+                    
+                    # Check if the point is within threshold of the closest mode
+                    if point_distances[closest_mode_idx] <= self.settings.mode_probability_threshold:
+                        point_mode_assignments[i] = closest_mode_idx
+                
+                # Count points belonging to each mode
+                mode_counts = np.zeros(len(medians), dtype=int)
+                for mode_idx in range(len(medians)):
+                    mode_counts[mode_idx] = np.sum(point_mode_assignments == mode_idx)
+                
+                # Add mode points to selected points
+                for i in range(len(medians)):
+                    # Find the point closest to this mode's median
+                    median_point = min(low_anomaly_points, key=lambda p: abs(p[2] - medians[i]))
+                    median_point_original = np.dot(median_point.reshape(1, -1), rotation_matrix.T) + mean_point
+                    mode_points.append(median_point_original[0])
+                    selected_points.append(median_point_original[0])
+                    point_strengths.append(mode_counts[i])
+                    n_extracted_modes += 1
+                
+                # Points that don't belong to any mode
+                outside_mask = point_mode_assignments == -1
                 outside_points = low_anomaly_points[outside_mask]
                 
                 if len(outside_points) > 0:
-                            outside_points_original = np.dot(outside_points, rotation_matrix.T) + mean_point
-                            low_prob_points.extend(outside_points_original)  # Track these points
-                            selected_points.extend(outside_points_original)
-                            n_outliers += len(outside_points)
-
+                    outside_points_original = np.dot(outside_points, rotation_matrix.T) + mean_point
+                    low_prob_points.extend(outside_points_original)  # Track these points
+                    selected_points.extend(outside_points_original)
+                    n_outliers += len(outside_points)
+                    # Add a strength of 1 for each outside point
+                    point_strengths.extend([1] * len(outside_points))
+                
                
         # Convert lists to numpy arrays
         selected_points = np.array(selected_points)
         high_anomaly_points = np.array(high_anomaly_points) if high_anomaly_points else np.empty((0, 3))
         mode_points = np.array(mode_points) if mode_points else np.empty((0, 3))
         low_prob_points = np.array(low_prob_points) if low_prob_points else np.empty((0, 3))
+        point_strengths = np.array(point_strengths) if point_strengths else np.empty((0,))
 
         if self.settings.save_intermediate_files:
             self.visualizer.visualize_leaf(points, leaf_id, output_dir, 
                                         selected_points, high_anomaly_points, 
-                                        mode_points, low_prob_points)
+                                        mode_points, low_prob_points, point_strengths)
         
         # Return both points and voxel statistics
         voxel_stats = {
@@ -383,7 +420,8 @@ class PointProcessor:
             'multimodal': n_voxels_multimodal,
             'high_anomaly_points': n_high_anomaly,
             'low_prob_points': len(low_prob_points),
-            'mode_points': len(mode_points)
+            'mode_points': len(mode_points),
+            'point_strengths': point_strengths
         }
         
         return selected_points, voxel_stats

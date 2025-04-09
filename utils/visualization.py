@@ -16,7 +16,7 @@ class Visualizer:
         
         if scores is not None:
             scatter = ax.scatter(points[:, 0], points[:, 1], points[:, 2],
-                               c=scores, cmap='viridis', s=s, alpha=alpha)
+                               c=scores, cmap='hot', s=s, alpha=alpha)
             plt.colorbar(scatter, label='Anomaly Score')
         else:
             scatter = ax.scatter(points[:, 0], points[:, 1], points[:, 2],
@@ -34,7 +34,7 @@ class Visualizer:
             plt.show()
 
     def visualize_leaf(self, points, leaf_id, output_dir, selected_points, 
-                      high_anomaly_points, mode_points, low_prob_points):
+                      high_anomaly_points, mode_points, low_prob_points, point_strengths=None):
         """Visualize a leaf of points with three subplots."""
         fig = plt.figure(figsize=(20, 6))
         
@@ -75,13 +75,32 @@ class Visualizer:
         ax2.set_zlabel('Z (m)')
         ax2.legend()
         
-        # Depth subplot
+        # Mode strength subplot (previously depth subplot)
         ax3 = fig.add_subplot(133, projection='3d')
-        scatter = ax3.scatter(points[:, 0], points[:, 1], points[:, 2],
-                            c=points[:, 2], cmap='viridis', s=5, alpha=0.7)
-        plt.colorbar(scatter, label='Z (m)')
         
-        ax3.set_title(f'Leaf {leaf_id} - Point Depths')
+        if point_strengths is not None and len(point_strengths) > 0:
+            # Check if point_strengths length matches selected_points length
+            if len(point_strengths) == len(selected_points):
+                # Color by mode strength with enhanced visibility
+                # Use a more vibrant colormap and increase point size
+                scatter = ax3.scatter(selected_points[:, 0], selected_points[:, 1], selected_points[:, 2],
+                                    c=point_strengths, cmap='hot', s=5, alpha=0.8)
+                plt.colorbar(scatter, label='Mode Strength')
+                ax3.set_title(f'Leaf {leaf_id} - Mode Strengths')
+            else:
+                # If lengths don't match, fall back to depth coloring
+                print(f"Warning: point_strengths length ({len(point_strengths)}) doesn't match selected_points length ({len(selected_points)}). Using depth coloring instead.")
+                scatter = ax3.scatter(points[:, 0], points[:, 1], points[:, 2],
+                                    c=points[:, 2], cmap='hot', s=5, alpha=0.8)
+                plt.colorbar(scatter, label='Z (m)')
+                ax3.set_title(f'Leaf {leaf_id} - Mode Depths')
+        else:
+            # Fallback to depth coloring if no point_strengths provided
+            scatter = ax3.scatter(points[:, 0], points[:, 1], points[:, 2],
+                                c=points[:, 2], cmap='hot', s=5, alpha=0.8)
+            plt.colorbar(scatter, label='Z (m)')
+            ax3.set_title(f'Leaf {leaf_id} - Mode Depths')
+        
         ax3.set_xlabel('X (m)')
         ax3.set_ylabel('Y (m)')
         ax3.set_zlabel('Z (m)')
@@ -99,6 +118,6 @@ class Visualizer:
                             title='Original Complete Point Cloud',
                             output_file=f"{output_dir}/original_complete.png")
         
-        self.visualize_points(processed_points,
+        self.visualize_points(processed_points, scores = stats['point_strengths'],
                             title=f'Processed Complete Point Cloud\n{reduction_percentage:.1f}% reduction',
                             output_file=f"{output_dir}/processed_complete.png")
