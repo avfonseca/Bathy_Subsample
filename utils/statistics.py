@@ -13,6 +13,15 @@ class StatsCollector:
             final_points = np.vstack(all_processed_points)
             np.savetxt(f"{output_dir}/processed_points.xyz", final_points)
 
+            # Combine point strengths
+            all_point_strengths = []
+            for s in all_voxel_stats:
+                if 'point_strengths' in s and len(s['point_strengths']) > 0:
+                    all_point_strengths.extend(s['point_strengths'])
+            
+            # Convert to numpy array if there are any point strengths
+            point_strengths = np.array(all_point_strengths) if all_point_strengths else None
+
             # Combine statistics
             original_point_count = len(original_points)
             final_point_count = len(final_points)
@@ -28,7 +37,8 @@ class StatsCollector:
             'voxels_unimodal': sum(s['unimodal'] for s in all_voxel_stats),
             'voxels_multimodal': sum(s['multimodal'] for s in all_voxel_stats),
             'high_anomaly_points': sum(s['high_anomaly_points'] for s in all_voxel_stats),
-            'low_prob_points': sum(s.get('low_prob_points', 0) for s in all_voxel_stats)
+            'low_prob_points': sum(s.get('low_prob_points', 0) for s in all_voxel_stats),
+            'point_strengths': point_strengths
             }
 
                   
