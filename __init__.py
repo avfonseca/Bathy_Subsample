@@ -1,3 +1,5 @@
+from .version import VERSION, __version__
 from .core.isolation_grid import IsolationGrid
+from .config.settings import Settings
 
-__version__ = "1.0.0"
+__all__ = ['IsolationGrid', 'Settings']
