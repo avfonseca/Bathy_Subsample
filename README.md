@@ -33,6 +33,7 @@ pip install -e .
 - joblib
 - tqdm
 - seaborn
+- eif  -> https://github.com/sahandha/eif
 
 ## Usage
 

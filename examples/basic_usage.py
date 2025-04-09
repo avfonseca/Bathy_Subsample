@@ -1,13 +1,11 @@
 import os
 import sys
-# Import version first
-from version import VERSION, __version__
 import eif as iso
-print(f"Loading eif module from: {os.path.abspath(iso.__file__)}")
 
-# Get the absolute path to the project root directory (two levels up from this file)
-project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.append(project_root)
+# Add the parent directory to Python path so we can import bathy_subsample
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(os.path.dirname(current_dir))
+sys.path.insert(0, parent_dir)
 
 from bathy_subsample import IsolationGrid
 
