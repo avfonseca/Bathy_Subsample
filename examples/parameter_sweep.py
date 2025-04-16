@@ -14,9 +14,6 @@ from pathlib import Path
 from tqdm import tqdm
 import itertools
 from datetime import datetime
-from scipy.sparse import csr_matrix
-from scipy.sparse.linalg import eigsh
-from sklearn.neighbors import NearestNeighbors
 import contextlib
 import io
 import time
@@ -49,8 +46,6 @@ def parse_args():
     parser.add_argument("--mode_probability_threshold", help="Comma-separated list of mode probability thresholds")
     parser.add_argument("--min_points_for_mode", help="Comma-separated list of minimum points for mode")
     parser.add_argument("--max_modes", help="Comma-separated list of maximum modes")
-    parser.add_argument("--k_neighbors", default="10", help="Number of nearest neighbors for graph construction")
-    parser.add_argument("--skip_gft", action="store_true", help="Skip Graph Fourier Transform calculations")
     return parser.parse_args()
 
 @contextlib.contextmanager
@@ -101,96 +96,6 @@ def run_isolation_grid(points, params):
                 print(f'Failed to delete directory {temp_output_dir}. Reason: {e}')
                 
         return final_points, stats
-
-def construct_graph_laplacian(points, k=10):
-    """
-    Construct the graph Laplacian matrix for a point cloud.
-    
-    Args:
-        points: Nx3 array of 3D points
-        k: Number of nearest neighbors to consider
-        
-    Returns:
-        L: Graph Laplacian matrix (sparse)
-        eigenvalues: Eigenvalues of the Laplacian
-        eigenvectors: Eigenvectors of the Laplacian
-    """
-    # Use k-nearest neighbors to construct the graph
-    nbrs = NearestNeighbors(n_neighbors=k+1, algorithm='ball_tree').fit(points)
-    distances, indices = nbrs.kneighbors(points)
-    
-    # Remove self-connections
-    indices = indices[:, 1:]
-    distances = distances[:, 1:]
-    
-    # Compute weights using Gaussian kernel
-    sigma = np.mean(distances)  # Scale parameter for the Gaussian kernel
-    weights = np.exp(-distances**2 / (2 * sigma**2))
-    
-    # Construct the adjacency matrix (sparse)
-    n = len(points)
-    rows = np.repeat(np.arange(n), k)
-    cols = indices.flatten()
-    data = weights.flatten()
-    
-    # Create sparse adjacency matrix
-    A = csr_matrix((data, (rows, cols)), shape=(n, n))
-    A = (A + A.T) / 2  # Make symmetric
-    
-    # Compute degree matrix - FIXED: Use the sum of each row directly
-    degrees = np.array(A.sum(axis=1)).flatten()
-    D = csr_matrix((degrees, (np.arange(n), np.arange(n))), shape=(n, n))
-    
-    # Compute normalized Laplacian: L = I - D^(-1/2) A D^(-1/2)
-    # Avoid division by zero by setting zero degrees to 1
-    degrees_sqrt = np.sqrt(degrees)
-    degrees_sqrt[degrees_sqrt == 0] = 1.0
-    D_inv_sqrt = csr_matrix((1/degrees_sqrt, (np.arange(n), np.arange(n))), shape=(n, n))
-    L = csr_matrix((np.ones(n), (np.arange(n), np.arange(n))), shape=(n, n)) - D_inv_sqrt @ A @ D_inv_sqrt
-    
-    # Compute eigenvalues and eigenvectors (only the smallest ones)
-    # We use eigsh for symmetric matrices
-    eigenvalues, eigenvectors = eigsh(L, k=min(100, n-1), which='SM')
-    
-    return L, eigenvalues, eigenvectors
-
-def graph_fourier_transform(points, k=10):
-    """
-    Compute the Graph Fourier Transform of a point cloud.
-    
-    Args:
-        points: Nx3 array of 3D points
-        k: Number of nearest neighbors for graph construction
-        
-    Returns:
-        eigenvalues: Eigenvalues of the graph Laplacian
-        gft_coeffs: Graph Fourier Transform coefficients
-    """
-    # Construct graph Laplacian
-    _, eigenvalues, eigenvectors = construct_graph_laplacian(points, k)
-    
-    # Compute GFT coefficients
-    # For each point, we use its z-coordinate as the signal
-    signal = points[:, 2]
-    
-    # Compute GFT coefficients: c = U^T * f
-    # where U is the matrix of eigenvectors and f is the signal
-    gft_coeffs = np.dot(eigenvectors.T, signal)
-    
-    return eigenvalues, gft_coeffs
-
-def plot_graph_fourier_transform(eigenvalues, gft_coeffs, title, output_file):
-    """Plot the Graph Fourier Transform coefficients."""
-    plt.figure(figsize=(10, 6))
-    
-    # Plot magnitude of GFT coefficients
-    plt.plot(eigenvalues, np.abs(gft_coeffs))
-    plt.title(title)
-    plt.xlabel('Eigenvalue (Frequency)')
-    plt.ylabel('Magnitude')
-    plt.grid(True)
-    plt.savefig(output_file)
-    plt.close()
 
 def plot_results(results, output_dir, param_name):
     """Plot results for a single parameter sweep."""
@@ -299,40 +204,13 @@ def main():
     # Create output directory
     os.makedirs(args.output, exist_ok=True)
     
-    # Calculate GFT for input points if not skipped
-    if not args.skip_gft:
-        print("Computing Graph Fourier Transform for input point cloud...")
-        k_neighbors = int(args.k_neighbors)
-        eigenvalues, gft_coeffs = graph_fourier_transform(points, k=k_neighbors)
-        
-        # Save input GFT plot
-        plots_dir = os.path.join(args.output, "plots")
-        os.makedirs(plots_dir, exist_ok=True)
-        plot_graph_fourier_transform(
-            eigenvalues, 
-            gft_coeffs, 
-            "Input Point Cloud GFT", 
-            os.path.join(plots_dir, "input_gft.png")
-        )
-        
-        # Save input GFT data
-        np.savez(
-            os.path.join(args.output, "input_gft.npz"),
-            eigenvalues=eigenvalues,
-            gft_coeffs=gft_coeffs
-        )
-    else:
-        print("Skipping Graph Fourier Transform calculations as requested")
-        plots_dir = os.path.join(args.output, "plots")
-        os.makedirs(plots_dir, exist_ok=True)
-    
     # Define default parameters
     default_params = {
         "group_size": 1000,
         "voxel_x_size": 1.0,
         "voxel_y_size": 1.0,
-        "anomaly_threshold": 0.5,
-        "mode_probability_threshold": 3.0,
+        "anomaly_threshold": 0.4,  # Changed from 0.5 to match basic_usage.py
+        "mode_probability_threshold": 3.0,  # Changed from 0.3 to match basic_usage.py
         "min_points_for_mode": 3,
         "max_modes": 2
     }
@@ -415,28 +293,6 @@ def main():
         
         # Outside points ratio is low_prob_points/(too_few_points+unimodal+multimodal)
         outside_points_ratio = low_prob_points / (too_few_points + unimodal + multimodal) if (too_few_points + unimodal + multimodal) > 0 else 0
-        
-        # Calculate GFT for subsampled points if not skipped
-        if not args.skip_gft and len(subsampled_points) >= int(args.k_neighbors) + 1:  # Need enough points for GFT
-            try:
-                sub_eigenvalues, sub_gft_coeffs = graph_fourier_transform(subsampled_points, k=int(args.k_neighbors))
-                
-                # Save GFT plot
-                plot_graph_fourier_transform(
-                    sub_eigenvalues, 
-                    sub_gft_coeffs, 
-                    f"Subsampled GFT ({param_name}={param_value})", 
-                    os.path.join(plots_dir, f"gft_{param_name}_{param_value}.png")
-                )
-                
-                # Save GFT data
-                np.savez(
-                    os.path.join(args.output, f"gft_{param_name}_{param_value}.npz"),
-                    eigenvalues=sub_eigenvalues,
-                    gft_coeffs=sub_gft_coeffs
-                )
-            except Exception as e:
-                print(f"Warning: Could not compute GFT for {param_name}={param_value}: {e}")
         
         # Save results
         result = {

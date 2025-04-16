@@ -55,8 +55,7 @@ def main():
             sys.executable,  # Use the same Python interpreter
             os.path.join(current_dir, "parameter_sweep.py"),
             "--input", input_file,
-            "--output", param_output_dir, "--skip_gft",
-            "--k_neighbors", "10"  # Number of nearest neighbors for graph construction
+            "--output", param_output_dir
         ]
         
         # Add the parameter to sweep
