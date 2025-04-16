@@ -336,7 +336,7 @@ class PointProcessor:
                         low_prob_points.extend(outside_points_original)  # Track these points
                         selected_points.extend(outside_points_original)
                         n_outliers += len(outside_points)
-                        point_strengths.append(np.ones(len(outside_points)))
+                        point_strengths.extend([1] * len(outside_points))
             
 
             
