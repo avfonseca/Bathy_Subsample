@@ -16,8 +16,8 @@ A Python package for processing bathymetric point clouds using isolation forests
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/bathy_subsample.git
-cd bathy_subsample
+git clone https://github.com/avfonseca/Bathy_Sumbsample.git
+cd Bathy_Subsample
 
 # Install in development mode
 pip install -e .
