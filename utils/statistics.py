@@ -13,6 +13,13 @@ class StatsCollector:
             final_points = np.vstack(all_processed_points)
             np.savetxt(f"{output_dir}/processed_points.xyz", final_points)
 
+            # Save mode assignments
+            mode_assignments = {}
+            for voxel_stats in all_voxel_stats:
+                  if 'mode_assignments' in voxel_stats:
+                        for voxel_key, assignments in voxel_stats['mode_assignments'].items():
+                              mode_assignments[voxel_key] = assignments
+
             # Combine point strengths
             all_point_strengths = []
             for s in all_voxel_stats:
