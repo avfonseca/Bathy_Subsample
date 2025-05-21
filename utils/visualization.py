@@ -17,7 +17,7 @@ class Visualizer:
         if scores is not None:
             scatter = ax.scatter(points[:, 0], points[:, 1], points[:, 2],
                                c=scores, cmap='hot', s=s, alpha=alpha)
-            plt.colorbar(scatter, label='Anomaly Score')
+            plt.colorbar(scatter, label='Point Strength')
         else:
             scatter = ax.scatter(points[:, 0], points[:, 1], points[:, 2],
                                c='blue', s=s, alpha=alpha)

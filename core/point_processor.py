@@ -82,15 +82,6 @@ class PointProcessor:
                             print(f"Too few points or std is small enough")
                             print(f"Defaulting to standard deviation")
 
-                # Calculate probabilities for each mode using clipped standard deviations
-                all_probs = np.zeros((len(data), 1))
-                
-                z_scores = np.abs(data - data_median) / (data_std + 1e-10)
-                    # Calculate probabilities using z-scores
-                mode_probs = np.exp(-0.5 * z_scores**2)
-                all_probs[:,0] = mode_probs
-                
-                
                 return {
                     'modes': [{'mean': data_median, 'std': min(data_std, max_std)}],
                     'gmm': None,
@@ -114,15 +105,6 @@ class PointProcessor:
             except Exception as e:
                 if self.settings.verbose:
                     print(f"GMM fitting failed Defaulting to standard deviation: {str(e)}")
-
-                    # Calculate probabilities for each mode using clipped standard deviations
-                    all_probs = np.zeros((len(data), n_modes))
-                    
-                    z_scores = np.abs(data - data_median) / (data_std + 1e-10)
-                        # Calculate probabilities using z-scores
-                    mode_probs = np.exp(-0.5 * z_scores**2)
-                    all_probs[:,0] = mode_probs
-                    
                     
                     return {
                         'modes': [{'mean': data_median, 'std': min(data_std, max_std)}],
@@ -150,16 +132,6 @@ class PointProcessor:
         
         # Sort modes by mean depth
         modes.sort(key=lambda x: x['mean'])
-        
-        # Calculate probabilities for each mode using clipped standard deviations
-        all_probs = np.zeros((len(data), len(modes)))
-        
-        for i, mode in enumerate(modes):
-            z_scores = np.abs(data - mode['mean']) / mode['std']
-            # Calculate probabilities using z-scores
-            mode_probs = np.exp(-0.5 * z_scores**2)
-            all_probs[:, i] = mode_probs
-        
         
         return {
             'modes': modes,
@@ -200,7 +172,7 @@ class PointProcessor:
         # Initialize lists for different point categories
         selected_points = []
         high_anomaly_points = []
-        mode_points = []
+        mode_representatives = []  # List of points that represent each mode
         low_prob_points = []
         point_strengths = []
         
@@ -214,6 +186,9 @@ class PointProcessor:
         n_voxels_multimodal = 0
        
         total_voxels = len(voxel_dict)
+        
+        # Track mode assignments for all voxels
+        all_mode_assignments = {}  # Dictionary of all points assigned to each mode
         
         # Process each voxel
         for voxel_key, voxel_points in voxel_dict.items():
@@ -273,18 +248,31 @@ class PointProcessor:
 
                     n_extracted_modes +=1
 
+                    # Track points belonging to mode (in transformed space)
+                    mode_points_dict = {0: []}  # Single mode with index 0
                     
+                    # Calculate z-scores for all points
+                    z_scores = abs(low_anomaly_points[:, 2] - median)/(std_th + 1e-10)
+                    
+                    # Store points within threshold
+                    mode_mask = z_scores <= self.settings.mode_probability_threshold
+                    mode_points_voxel = low_anomaly_points[mode_mask]
+                    mode_points_dict[0] = mode_points_voxel.tolist()  # Store ALL points in this mode
+                    
+                    # Store mode assignments
+                    all_mode_assignments[voxel_key] = mode_points_dict
+                    
+                    # Find and store the representative point for this mode
                     median_point = min(low_anomaly_points, key=lambda p: abs(p[2] - median))
                     median_point_original = np.dot(median_point.reshape(1, -1), rotation_matrix.T) + mean_point
-                    mode_points.append(median_point_original[0])
+                    mode_representatives.append(median_point_original)  # Store the representative point
                     selected_points.append(median_point_original[0])
                     
                     # Keep points outside std limit
-                    mode_str = len(low_anomaly_points[abs(low_anomaly_points[:, 2] - median)/(std_th + 1e-10) <= self.settings.mode_probability_threshold])
+                    mode_str = len(mode_points_dict[0])
                     point_strengths.append(mode_str)
 
-
-                    outside_points = low_anomaly_points[abs(low_anomaly_points[:, 2] - median)/(std_th + 1e-10) > self.settings.mode_probability_threshold]
+                    outside_points = low_anomaly_points[~mode_mask]
                     
                     if len(outside_points) > 0:
                         outside_points_original = np.dot(outside_points, rotation_matrix.T) + mean_point
@@ -296,24 +284,20 @@ class PointProcessor:
 
             
             elif result['type'] == "multimodal": # N > 1
-
                 medians = np.array([mode['mean'] for mode in result['modes']]).reshape(-1, 1)
                 std_ths = np.array([mode['std'] for mode in result['modes']]).reshape(-1, 1)
 
-                
                 # Reshape depths for broadcasting
                 depths = low_anomaly_points[:, 2].reshape(1, -1)  # Shape: (1, n_points)
 
                 # Calculate normalized distances for each point to each mode
                 normalized_distances = abs(depths - medians) / std_ths  # Shape: (n_modes, n_points)
                 
-                # For each point, determine which mode it belongs to
-                # A point belongs to a mode if:
-                # 1. Its normalized distance to that mode is <= threshold
-                # 2. It's closer to that mode than to any other mode
-                
                 # Initialize array to track which mode each point belongs to
                 point_mode_assignments = np.full(len(low_anomaly_points), -1)  # -1 means no mode assigned
+                
+                # Track points belonging to each mode (in transformed space)
+                mode_points_dict = {i: [] for i in range(len(medians))}
                 
                 # For each point, find the closest mode
                 for i in range(len(low_anomaly_points)):
@@ -326,18 +310,23 @@ class PointProcessor:
                     # Check if the point is within threshold of the closest mode
                     if point_distances[closest_mode_idx] <= self.settings.mode_probability_threshold:
                         point_mode_assignments[i] = closest_mode_idx
+                        # Store the point in transformed space
+                        mode_points_dict[closest_mode_idx].append(low_anomaly_points[i].tolist())
+                
+                # Store mode assignments for this voxel
+                all_mode_assignments[voxel_key] = mode_points_dict
                 
                 # Count points belonging to each mode
                 mode_counts = np.zeros(len(medians), dtype=int)
                 for mode_idx in range(len(medians)):
-                    mode_counts[mode_idx] = np.sum(point_mode_assignments == mode_idx)
+                    mode_counts[mode_idx] = len(mode_points_dict[mode_idx])
                 
-                # Add mode points to selected points
+                # Add mode representative points
                 for i in range(len(medians)):
                     # Find the point closest to this mode's median
                     median_point = min(low_anomaly_points, key=lambda p: abs(p[2] - medians[i]))
                     median_point_original = np.dot(median_point.reshape(1, -1), rotation_matrix.T) + mean_point
-                    mode_points.append(median_point_original[0])
+                    mode_representatives.append(median_point_original)  # Store the representative point
                     selected_points.append(median_point_original[0])
                     point_strengths.append(mode_counts[i])
                     n_extracted_modes += 1
@@ -351,21 +340,20 @@ class PointProcessor:
                     low_prob_points.extend(outside_points_original)  # Track these points
                     selected_points.extend(outside_points_original)
                     n_outliers += len(outside_points)
-                    # Add a strength of 1 for each outside point
                     point_strengths.extend([1] * len(outside_points))
                 
                
         # Convert lists to numpy arrays
         selected_points = np.array(selected_points)
         high_anomaly_points = np.array(high_anomaly_points) if high_anomaly_points else np.empty((0, 3))
-        mode_points = np.array(mode_points) if mode_points else np.empty((0, 3))
+        mode_representatives = np.vstack(mode_representatives) if mode_representatives else np.empty((0, 3))
         low_prob_points = np.array(low_prob_points) if low_prob_points else np.empty((0, 3))
         point_strengths = np.array(point_strengths) if point_strengths else np.empty((0,))
 
         if self.settings.save_intermediate_files:
             self.visualizer.visualize_leaf(points, leaf_id, output_dir, 
                                         selected_points, high_anomaly_points, 
-                                        mode_points, low_prob_points, point_strengths)
+                                        mode_representatives, low_prob_points, point_strengths)
         
         # Return both points and voxel statistics
         voxel_stats = {
@@ -375,8 +363,9 @@ class PointProcessor:
             'multimodal': n_voxels_multimodal,
             'high_anomaly_points': n_high_anomaly,
             'low_prob_points': len(low_prob_points),
-            'mode_points': len(mode_points),
-            'point_strengths': point_strengths
+            'mode_points': len(mode_representatives),
+            'point_strengths': point_strengths,
+            'mode_assignments': all_mode_assignments
         }
         
         return selected_points, voxel_stats
