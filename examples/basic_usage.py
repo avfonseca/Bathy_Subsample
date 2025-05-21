@@ -15,11 +15,11 @@ def main():
         group_size=1000,
         voxel_x_size=3.0,
         voxel_y_size=3.0,
-        mode_probability_threshold=2,
+        mode_probability_threshold=3,
         anomaly_threshold=0.5,
         min_points_for_mode=3,
-        max_modes=2,
-        save_intermediate_files=False
+        max_modes=3,
+        save_intermediate_files=True
     )
     
     final_points, stats = processor.process('example_points.xyz')

@@ -2,7 +2,7 @@ import numpy as np
 from sklearn.neighbors import KDTree
 from collections import defaultdict
 import eif as iso
-from sklearn.mixture import GaussianMixture
+from sklearn.mixture import BayesianGaussianMixture
 import warnings
 from sklearn.exceptions import ConvergenceWarning
 from ..utils.visualization import Visualizer
@@ -102,27 +102,18 @@ class PointProcessor:
         # Try fitting GMM with N modes
         n_modes = self.settings.max_modes
         
-        if (len(data)  >= n_modes * self.settings.min_points_for_mode and n_modes > 1):
+        if (len(data)  >= n_modes * self.settings.min_points_for_mode):
             try:
                 result = self.extract_gmm(data, n_modes, max_std)
                 if self.settings.verbose:
                     print(f"n_modes: {n_modes}, GMM converged: {result['gmm'].converged_}, n_components: {result['gmm'].n_components}")
                 return result
             
+            
             except Exception as e:
                 if self.settings.verbose:
-                    print(f"GMM fitting failed for {str(n_modes)}: {str(e)}")
-                # If GMM fails, fall back to n == 1
-                try:
-                    result = self.extract_gmm(data, 1, max_std)
-                    if self.settings.verbose:
-                        print(f"n_modes: 1, GMM converged: {result['gmm'].converged_}, n_components: {result['gmm'].n_components}")
-                    return result
-            
-                except Exception as e:
-                    if self.settings.verbose:
-                        print(f"GMM fitting failed for fallback to 1 mode: {str(e)}")
-                        print(f"Defaulting to standard deviation")
+                    print(f"GMM fitting failed Defaulting to standard deviation: {str(e)}")
+
                     # Calculate probabilities for each mode using clipped standard deviations
                     all_probs = np.zeros((len(data), n_modes))
                     
@@ -137,21 +128,25 @@ class PointProcessor:
                         'gmm': None,
                         'type': "std" 
                     }
-                    
-        elif (len(data) >= self.settings.min_points_for_mode):
-
-                try:
-                        result = self.extract_gmm(data, 1, max_std)
-                        if self.settings.verbose:
-                            print(f"n_modes: 1, GMM converged: {result['gmm'].converged_}, n_components: {result['gmm'].n_components}")
-                        return result
+        else:
+            if self.settings.verbose:
+                print(f"Not enough points to fit GMM with {n_modes} modes")
                 
-                except Exception as e:
-                    if self.settings.verbose:
-                        print(f"GMM fitting failed for fallback to 1 mode: {str(e)}")
-                        print(f"Defaulting to standard deviation")
+            try_modes = len(data)//self.settings.min_points_for_mode
+
+            try:
+                result = self.extract_gmm(data, try_modes, max_std)
+                if self.settings.verbose:
+                    print(f"n_modes: {try_modes}, GMM converged: {result['gmm'].converged_}, n_components: {result['gmm'].n_components}")
+                return result
+            
+            
+            except Exception as e:
+                if self.settings.verbose:
+                    print(f"GMM fitting failed Defaulting to standard deviation: {str(e)}")
+
                     # Calculate probabilities for each mode using clipped standard deviations
-                    all_probs = np.zeros((len(data), 1))
+                    all_probs = np.zeros((len(data), n_modes))
                     
                     z_scores = np.abs(data - data_median) / (data_std + 1e-10)
                         # Calculate probabilities using z-scores
@@ -166,18 +161,13 @@ class PointProcessor:
                     }
 
 
-
-
-
-
-
-
-
     def extract_gmm(self, data, n_modes, max_std):
-        gmm = GaussianMixture(n_components=n_modes,
+        gmm = BayesianGaussianMixture(n_components=n_modes,
+                                         covariance_type='spherical',
                                 random_state=42,
                                 max_iter=100,
-                                n_init=5)
+                                n_init=5,
+                                init_params='k-means++')
             
         # Fit GMM
         gmm.fit(data.reshape(-1, 1))
@@ -186,8 +176,6 @@ class PointProcessor:
         modes = []
         for mean, covar in zip(gmm.means_, gmm.covariances_):
             std = np.sqrt(covar.flatten()[0])
-            # Clip standard deviation to max_std
-            std = min(std, max_std)
             modes.append({'mean': mean[0], 'std': std})
         
         # Sort modes by mean depth
@@ -195,16 +183,13 @@ class PointProcessor:
         
         # Calculate probabilities for each mode using clipped standard deviations
         all_probs = np.zeros((len(data), len(modes)))
+        
         for i, mode in enumerate(modes):
-            # Calculate z-scores using clipped standard deviation
             z_scores = np.abs(data - mode['mean']) / mode['std']
             # Calculate probabilities using z-scores
             mode_probs = np.exp(-0.5 * z_scores**2)
             all_probs[:, i] = mode_probs
         
-        # Update GMM with clipped standard deviations
-        for i, mode in enumerate(modes):
-            gmm.covariances_[i] = np.array([[mode['std']**2]])
         
         return {
             'modes': modes,
