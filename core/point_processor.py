@@ -102,39 +102,9 @@ class PointProcessor:
         # Try fitting GMM with N modes
         n_modes = self.settings.max_modes
         
-        if (len(data)  >= n_modes * self.settings.min_points_for_mode):
+        if (len(data)  >=  self.settings.min_points_for_mode):
             try:
-                result = self.extract_gmm(data, n_modes, max_std)
-                if self.settings.verbose:
-                    print(f"n_modes: {n_modes}, GMM converged: {result['gmm'].converged_}, n_components: {result['gmm'].n_components}")
-                return result
-            
-            
-            except Exception as e:
-                if self.settings.verbose:
-                    print(f"GMM fitting failed Defaulting to standard deviation: {str(e)}")
-
-                    # Calculate probabilities for each mode using clipped standard deviations
-                    all_probs = np.zeros((len(data), n_modes))
-                    
-                    z_scores = np.abs(data - data_median) / (data_std + 1e-10)
-                        # Calculate probabilities using z-scores
-                    mode_probs = np.exp(-0.5 * z_scores**2)
-                    all_probs[:,0] = mode_probs
-                    
-                    
-                    return {
-                        'modes': [{'mean': data_median, 'std': min(data_std, max_std)}],
-                        'gmm': None,
-                        'type': "std" 
-                    }
-        else:
-            if self.settings.verbose:
-                print(f"Not enough points to fit GMM with {n_modes} modes")
-                
-            try_modes = len(data)//self.settings.min_points_for_mode
-
-            try:
+                try_modes = min(n_modes,len(data)//self.settings.min_points_for_mode)
                 result = self.extract_gmm(data, try_modes, max_std)
                 if self.settings.verbose:
                     print(f"n_modes: {try_modes}, GMM converged: {result['gmm'].converged_}, n_components: {result['gmm'].n_components}")
