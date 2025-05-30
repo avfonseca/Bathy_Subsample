@@ -22,45 +22,54 @@ class PointProcessor:
         self.voxel_processor = voxel_processor
     
     def prepare_leaves(self, points, output_dir):
-        """Prepare leaves for processing."""
+        """Prepare leaves for processing using Morton order (Z-order curve)."""
         n_points = len(points)
-        points_remaining = np.ones(n_points, dtype=bool)
-        leaf_id = 0
+        if n_points == 0:
+            return []
+        
+        # Compute Morton codes for spatial ordering
+        morton_codes = self._compute_morton_codes(points)
+        
+        # Sort points by Morton code for spatial locality
+        sorted_indices = np.argsort(morton_codes)
+        
+        # Create leaves by taking consecutive chunks
         leaf_data = []
+        leaf_id = 0
         points_processed = 0
         
-        while np.sum(points_remaining) >= self.settings.group_size:
-            unassigned_indices = np.where(points_remaining)[0]
-            unassigned_points = points[unassigned_indices]
-            
-            tree = KDTree(unassigned_points)
-            center_point = unassigned_points[0:1]
-            
-            _, neighbor_indices = tree.query(
-                center_point, 
-                k=self.settings.group_size,
-                return_distance=True,
-                dualtree=True
-            )
-            neighbor_indices = neighbor_indices[0]
-            
-            selected_indices = unassigned_indices[neighbor_indices]
-            group_points = points[selected_indices]
+        for i in range(0, n_points, self.settings.group_size):
+            chunk_indices = sorted_indices[i:i + self.settings.group_size]
+            group_points = points[chunk_indices]
             points_processed += len(group_points)
-            
-            points_remaining[selected_indices] = False
             
             leaf_data.append((group_points, leaf_id, output_dir))
             leaf_id += 1
         
-        # Process remaining points as final leaf
-        remaining_indices = np.where(points_remaining)[0]
-        if len(remaining_indices) > 0:
-            remaining_points = points[remaining_indices]
-            points_processed += len(remaining_points)
-            leaf_data.append((remaining_points, leaf_id, output_dir))
-        
         return leaf_data
+    
+    def _compute_morton_codes(self, points):
+        """Compute Morton codes (Z-order) for 3D points."""
+        # Normalize coordinates to [0, 1023] range for 10-bit precision per dimension
+        min_coords = np.min(points, axis=0)
+        max_coords = np.max(points, axis=0)
+        ranges = max_coords - min_coords
+        ranges = np.where(ranges == 0, 1, ranges)  # Avoid division by zero
+        
+        normalized = ((points - min_coords) / ranges * 1023).astype(np.uint32)
+        normalized = np.clip(normalized, 0, 1023)  # Ensure within bounds
+        
+        # Compute Morton codes using bit interleaving
+        morton_codes = np.zeros(len(points), dtype=np.uint64)
+        
+        for i in range(10):  # 10 bits per dimension
+            bit = 1 << i
+            morton_codes |= ((normalized[:, 0] & bit) << (2*i)) | \
+                           ((normalized[:, 1] & bit) << (2*i + 1)) | \
+                           ((normalized[:, 2] & bit) << (2*i + 2))
+        
+        return morton_codes
+
 
     def extract_all_modes(self, data):
         """Extract modes from depth values using Gaussian Mixture Model."""
