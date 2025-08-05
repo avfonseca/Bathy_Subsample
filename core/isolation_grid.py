@@ -27,7 +27,7 @@ class IsolationGrid:
     def __init__(self, group_size=1000, voxel_x_size=1.0, voxel_y_size=1.0, 
                  anomaly_threshold=0.5, mode_probability_threshold=0.3,
                  min_points_for_mode=3, max_modes=1, verbose=False, 
-                 save_intermediate_files=False, plot_interval=500):
+                 save_intermediate_files=False, plot_interval=500, best_hypothesis=False, navigation=False):
         """Initialize the IsolationGrid processor."""
         self.settings = Settings(
             group_size=group_size,
@@ -39,7 +39,9 @@ class IsolationGrid:
             max_modes=max_modes,
             verbose=verbose,
             save_intermediate_files=save_intermediate_files,
-            plot_interval=plot_interval
+            plot_interval=plot_interval,
+            best_hypothesis=best_hypothesis,
+            navigation=navigation
         )
         
         self.visualizer = Visualizer(self.settings)
@@ -57,6 +59,10 @@ class IsolationGrid:
         """Process a point cloud file using the isolation grid method."""
         self.point_processor.total_voxels_processed = 0
         os.makedirs(output_dir, exist_ok=True)
+        
+        # Set up cache directory for isolation forest models
+        cache_dir = os.path.join(output_dir, "cache")
+        self.point_processor.set_cache_dir(cache_dir)
         
         # Load point cloud
         print("Loading point cloud...")
@@ -88,8 +94,8 @@ class IsolationGrid:
             all_processed_results, points, output_dir)
         
         # Create visualizations if requested
-        if self.settings.save_intermediate_files:
-            self.visualizer.create_summary_plots(points, final_points, stats, output_dir)
+        
+        self.visualizer.create_summary_plots(points, final_points, stats, output_dir)
         
         # Print statistics
         self.stats_collector.print_summary_stats(stats)

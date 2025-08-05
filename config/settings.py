@@ -13,3 +13,5 @@ class Settings:
         self.verbose = kwargs.get('verbose', False)
         self.save_intermediate_files = kwargs.get('save_intermediate_files', False)
         self.plot_interval = kwargs.get('plot_interval', 500)
+        self.best_hypothesis = kwargs.get('best_hypothesis', False)
+        self.navigation = kwargs.get('navigation', False)

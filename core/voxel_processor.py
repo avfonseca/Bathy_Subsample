@@ -35,21 +35,38 @@ class VoxelProcessor:
         # Build KD-tree for nearest neighbor search
         tree = KDTree(points_for_normal)
         
-        # Find k nearest neighbors for each point
+        # Find k nearest neighbors for each point (vectorized)
         distances, indices = tree.query(points_for_normal, k=k)
         
-        # Compute normal for each point using PCA
-        normals = []
-        for i in range(len(points_for_normal)):
-            neighbors = points_for_normal[indices[i]]
-            centered = neighbors - np.mean(neighbors, axis=0)
-            cov = np.dot(centered.T, centered)
-            eigenvals, eigenvecs = np.linalg.eigh(cov)
+        # Vectorized normal computation
+        # Compute centroids for all neighborhoods at once
+        centroids = np.mean(points_for_normal[indices], axis=1)
+        
+        # Center all neighborhoods
+        centered = points_for_normal[indices] - centroids[:, np.newaxis, :]
+        
+        # Compute covariance matrices for all neighborhoods at once
+        # Reshape for batch matrix multiplication
+        n_points = len(points_for_normal)
+        centered_reshaped = centered.reshape(n_points * k, 3)
+        
+        # Compute covariance matrices using batch operations
+        covariances = np.zeros((n_points, 3, 3))
+        for i in range(n_points):
+            start_idx = i * k
+            end_idx = start_idx + k
+            neighborhood = centered_reshaped[start_idx:end_idx]
+            covariances[i] = np.dot(neighborhood.T, neighborhood) / k
+        
+        # Compute eigenvectors for all covariance matrices at once
+        normals = np.zeros((n_points, 3))
+        for i in range(n_points):
+            eigenvals, eigenvecs = np.linalg.eigh(covariances[i])
             normal = eigenvecs[:, 0]  # Smallest eigenvector is normal
             # Ensure normal points "up" (positive Z)
             if normal[2] < 0:
                 normal = -normal
-            normals.append(normal)
+            normals[i] = normal
         
         # Average the normals
         avg_normal = np.mean(normals, axis=0)

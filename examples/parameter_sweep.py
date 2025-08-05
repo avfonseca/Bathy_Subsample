@@ -209,7 +209,7 @@ def main():
         "group_size": 1000,
         "voxel_x_size": 1.0,
         "voxel_y_size": 1.0,
-        "anomaly_threshold": 0.4,  # Changed from 0.5 to match basic_usage.py
+        "anomaly_threshold": 0.5,  # Changed from 0.5 to match basic_usage.py
         "mode_probability_threshold": 3.0,  # Changed from 0.3 to match basic_usage.py
         "min_points_for_mode": 3,
         "max_modes": 2

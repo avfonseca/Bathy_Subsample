@@ -6,6 +6,12 @@ from sklearn.mixture import BayesianGaussianMixture
 import warnings
 from sklearn.exceptions import ConvergenceWarning
 from ..utils.visualization import Visualizer
+import hashlib
+import pickle
+import os
+from joblib import Parallel, delayed
+import tempfile
+import mmap
 warnings.filterwarnings('ignore', category=ConvergenceWarning) #We are already handling convergence warnings in the extract_gmm function
 
 class PointProcessor:
@@ -16,10 +22,58 @@ class PointProcessor:
         self.voxel_processor = None  # Will be set by IsolationGrid
         self.total_voxels_processed = 0
         self.visualizer = Visualizer(settings)
+        self.iforest_cache = {}  # Cache for isolation forest models
+        self.cache_dir = None
     
     def set_voxel_processor(self, voxel_processor):
         """Set the voxel processor instance."""
         self.voxel_processor = voxel_processor
+    
+    def set_cache_dir(self, cache_dir):
+        """Set cache directory for model persistence."""
+        self.cache_dir = cache_dir
+        if cache_dir:
+            os.makedirs(cache_dir, exist_ok=True)
+    
+    def _get_cache_key(self, points):
+        """Generate cache key based on point distribution statistics."""
+        # Use statistical moments as cache key (much faster than full point comparison)
+        stats = {
+            'mean': np.mean(points, axis=0),
+            'std': np.std(points, axis=0),
+            'min': np.min(points, axis=0),
+            'max': np.max(points, axis=0),
+            'count': len(points)
+        }
+        # Create hash from statistics
+        stats_str = str(sorted(stats.items()))
+        return hashlib.md5(stats_str.encode()).hexdigest()
+    
+    def _load_cached_iforest(self, cache_key):
+        """Load cached isolation forest model."""
+        if not self.cache_dir:
+            return None
+        
+        cache_file = os.path.join(self.cache_dir, f"iforest_{cache_key}.pkl")
+        if os.path.exists(cache_file):
+            try:
+                with open(cache_file, 'rb') as f:
+                    return pickle.load(f)
+            except:
+                return None
+        return None
+    
+    def _save_cached_iforest(self, cache_key, iforest):
+        """Save isolation forest model to cache."""
+        if not self.cache_dir:
+            return
+        
+        cache_file = os.path.join(self.cache_dir, f"iforest_{cache_key}.pkl")
+        try:
+            with open(cache_file, 'wb') as f:
+                pickle.dump(iforest, f)
+        except:
+            pass  # Silently fail if cache save fails
     
     def prepare_leaves(self, points, output_dir):
         """Prepare leaves for processing using Morton order (Z-order curve)."""
@@ -105,7 +159,7 @@ class PointProcessor:
         if (len(data)  >=  self.settings.min_points_for_mode):
             try:
                 try_modes = min(n_modes,len(data)//self.settings.min_points_for_mode)
-                result = self.extract_gmm(data, try_modes, max_std)
+                result = self.extract_gmm(data, try_modes, best_hypothesis= self.settings.best_hypothesis)
                 if self.settings.verbose:
                     print(f"n_modes: {try_modes}, GMM converged: {result['gmm'].converged_}, n_components: {result['gmm'].n_components}")
                 return result
@@ -115,14 +169,14 @@ class PointProcessor:
                 if self.settings.verbose:
                     print(f"GMM fitting failed Defaulting to standard deviation: {str(e)}")
                     
-                    return {
+                return {
                         'modes': [{'mean': data_median, 'std': min(data_std, max_std)}],
                         'gmm': None,
                         'type': "std" 
                     }
 
 
-    def extract_gmm(self, data, n_modes, max_std):
+    def extract_gmm(self, data, n_modes, best_hypothesis=False):
         gmm = BayesianGaussianMixture(n_components=n_modes,
                                          covariance_type='spherical',
                                 random_state=42,
@@ -135,12 +189,19 @@ class PointProcessor:
         
         # Extract modes and sort by mean
         modes = []
-        for mean, covar in zip(gmm.means_, gmm.covariances_):
-            std = np.sqrt(covar.flatten()[0])
-            modes.append({'mean': mean[0], 'std': std})
+
+
+        if best_hypothesis:
+            largest_weight_idx = np.argmax(gmm.weights_)
+            modes.append({'mean': gmm.means_[largest_weight_idx][0], 'std': np.sqrt(gmm.covariances_[largest_weight_idx].flatten()[0])})
+        else:
+            for mean, covar in zip(gmm.means_, gmm.covariances_):
+                std = np.sqrt(covar.flatten()[0])
+                modes.append({'mean': mean[0], 'std': std})
         
         # Sort modes by mean depth
         modes.sort(key=lambda x: x['mean'])
+        
         
         return {
             'modes': modes,
@@ -161,12 +222,27 @@ class PointProcessor:
         points_std = np.std(points_for_iforest, axis=0)
         points_for_iforest = (points_for_iforest - points_mean) / points_std
         
-        sample_size = min(256, len(points))
-        iforest = iso.iForest(points_for_iforest, ntrees=200, sample_size=sample_size)
+        # Try to load cached model first
+        cache_key = self._get_cache_key(points_for_iforest)
+        iforest = self._load_cached_iforest(cache_key)
+        
+        if iforest is None:
+            # Create new model if not cached
+            sample_size = min(256, len(points))
+            iforest = iso.iForest(points_for_iforest, ntrees=200, sample_size=sample_size)
+            
+            # Cache the model for future use
+            self._save_cached_iforest(cache_key, iforest)
+        
         scores = iforest.compute_paths(X_in=points_for_iforest)
         
         # Normalize scores to [0,1] range
-        scores_normalized = (scores - np.min(scores)) / (np.max(scores) - np.min(scores))
+        score_range = np.max(scores) - np.min(scores)
+        if score_range > 0:
+            scores_normalized = (scores - np.min(scores)) / score_range
+        else:
+            # If all scores are the same, set all normalized scores to 0.5
+            scores_normalized = np.full_like(scores, 0.5)
         
         # Create voxel grid and get transformation matrices
         (voxel_indices, x_size, y_size, z_size, rotation_matrix, 
@@ -214,12 +290,13 @@ class PointProcessor:
             # Keep high anomaly points
             high_anomaly_mask = voxel_scores > self.settings.anomaly_threshold
             high_anomaly_points_voxel = voxel_points_array[high_anomaly_mask]
-            
+
             if len(high_anomaly_points_voxel) > 0:
                 high_anomaly_original = np.dot(high_anomaly_points_voxel, rotation_matrix.T) + mean_point
                 high_anomaly_points.extend(high_anomaly_original)
-                selected_points.extend(high_anomaly_original)
-                point_strengths.extend([1] * len(high_anomaly_original))
+                if self.settings.navigation == False:
+                    selected_points.extend(high_anomaly_original)
+                    point_strengths.extend([1] * len(high_anomaly_original))
                 n_high_anomaly += len(high_anomaly_original)
             
             # Get low anomaly points
@@ -332,19 +409,21 @@ class PointProcessor:
                 
                 # Add mode representative points
                 for i in range(len(medians)):
-                    # Find the point closest to this mode's median
-                    median_point = min(low_anomaly_points, key=lambda p: abs(p[2] - medians[i]))
-                    median_point_original = np.dot(median_point.reshape(1, -1), rotation_matrix.T) + mean_point
-                    mode_representatives.append(median_point_original)  # Store the representative point
-                    selected_points.append(median_point_original[0])
-                    point_strengths.append(mode_counts[i])
-                    n_extracted_modes += 1
+                    # Only add representative points for modes that actually have points assigned
+                    if mode_counts[i] > 0:
+                        # Find the point closest to this mode's median
+                        median_point = min(low_anomaly_points, key=lambda p: abs(p[2] - medians[i]))
+                        median_point_original = np.dot(median_point.reshape(1, -1), rotation_matrix.T) + mean_point
+                        mode_representatives.append(median_point_original)  # Store the representative point
+                        selected_points.append(median_point_original[0])
+                        point_strengths.append(mode_counts[i])
+                        n_extracted_modes += 1
                 
                 # Points that don't belong to any mode
                 outside_mask = point_mode_assignments == -1
                 outside_points = low_anomaly_points[outside_mask]
                 
-                if len(outside_points) > 0:
+                if len(outside_points) > 0 and self.settings.navigation == False:
                     outside_points_original = np.dot(outside_points, rotation_matrix.T) + mean_point
                     low_prob_points.extend(outside_points_original)  # Track these points
                     selected_points.extend(outside_points_original)
@@ -378,3 +457,57 @@ class PointProcessor:
         }
         
         return selected_points, voxel_stats
+
+    def _process_voxel_gmm_parallel(self, voxel_data):
+        """Process a single voxel with GMM fitting (for parallel processing)."""
+        voxel_key, voxel_points, voxel_scores, rotation_matrix, mean_point = voxel_data
+        
+        # Unpack points
+        voxel_points_array = np.array([p[0] for p in voxel_points])
+        
+        if len(voxel_points_array) == 0:
+            return None
+        
+        # Get low anomaly points
+        low_anomaly_mask = voxel_scores <= self.settings.anomaly_threshold
+        low_anomaly_points = voxel_points_array[low_anomaly_mask]
+        
+        if len(low_anomaly_points) == 0:
+            return None
+        
+        # Extract modes from depth values
+        result = self.extract_all_modes(low_anomaly_points[:, 2])
+        
+        if len(result['modes']) == 0:
+            return None
+        
+        # Process based on result type
+        processed_data = {
+            'voxel_key': voxel_key,
+            'result': result,
+            'low_anomaly_points': low_anomaly_points,
+            'rotation_matrix': rotation_matrix,
+            'mean_point': mean_point,
+            'voxel_scores': voxel_scores,
+            'voxel_points_array': voxel_points_array
+        }
+        
+        return processed_data
+    
+    def _process_voxels_parallel(self, voxel_dict, rotation_matrix, mean_point):
+        """Process all voxels in parallel using GMM fitting."""
+        # Prepare data for parallel processing
+        voxel_data_list = []
+        for voxel_key, voxel_points in voxel_dict.items():
+            voxel_scores = np.array([p[1] for p in voxel_points])
+            voxel_data_list.append((voxel_key, voxel_points, voxel_scores, rotation_matrix, mean_point))
+        
+        # Process voxels in parallel
+        n_jobs = min(8, len(voxel_data_list))  # Limit to 8 jobs to avoid memory issues
+        results = Parallel(n_jobs=n_jobs, backend='threading')(
+            delayed(self._process_voxel_gmm_parallel)(voxel_data) 
+            for voxel_data in voxel_data_list
+        )
+        
+        # Filter out None results
+        return [r for r in results if r is not None]

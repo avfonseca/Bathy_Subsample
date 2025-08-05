@@ -16,11 +16,11 @@ class Visualizer:
         
         if scores is not None:
             scatter = ax.scatter(points[:, 0], points[:, 1], points[:, 2],
-                               c=scores, cmap='hot', s=s, alpha=alpha)
-            plt.colorbar(scatter, label='Point Strength')
+                               c=np.log(scores), cmap='cividis', s=s, alpha=alpha)
+            plt.colorbar(scatter, label='Log of Point Strength')
         else:
             scatter = ax.scatter(points[:, 0], points[:, 1], points[:, 2],
-                               c='blue', s=s, alpha=alpha)
+                               c=points[:, 2], vmin=-14, vmax=-2,cmap = 'terrain',s=s, alpha=alpha)
         
         ax.set_title(title)
         ax.set_xlabel('X (m)')
@@ -50,7 +50,7 @@ class Visualizer:
         # Selected points subplot
         ax2 = fig.add_subplot(132, projection='3d')
         
-        if len(high_anomaly_points) > 0:
+        if len(high_anomaly_points) > 0 and self.settings.navigation == False:
             ax2.scatter(high_anomaly_points[:, 0], high_anomaly_points[:, 1], 
                        high_anomaly_points[:, 2], c='red', s=5, alpha=0.7, 
                        label='High Anomaly')
@@ -65,7 +65,9 @@ class Visualizer:
                        label='Low Prob/Outside')
         
         title_str = f'Leaf {leaf_id} - Selected Points\n'
-        title_str += f'High Anomaly: {len(high_anomaly_points):,}\n'
+        if self.settings.navigation == False:
+            title_str += f'High Anomaly: {len(high_anomaly_points):,}\n'
+        
         title_str += f'Mode/Median: {len(mode_points):,}\n'
         title_str += f'Low Prob/Outside: {len(low_prob_points):,}'
         
@@ -121,3 +123,5 @@ class Visualizer:
         self.visualize_points(processed_points, scores = stats['point_strengths'],
                             title=f'Processed Complete Point Cloud\n{reduction_percentage:.1f}% reduction',
                             output_file=f"{output_dir}/processed_complete.png")
+        
+    

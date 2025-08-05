@@ -9,8 +9,17 @@ class StatsCollector:
             all_processed_points = [result[0] for result in all_processed_results]
             all_voxel_stats = [result[1] for result in all_processed_results]
 
-            # Combine points
-            final_points = np.vstack(all_processed_points)
+            # Filter out empty arrays before combining
+            non_empty_points = [points for points in all_processed_points if len(points) > 0]
+            
+            # Check if we have any points to combine
+            if not non_empty_points:
+                print("Warning: No points were processed successfully. Returning empty array.")
+                final_points = np.empty((0, 3))
+            else:
+                # Combine points
+                final_points = np.vstack(non_empty_points)
+            
             np.savetxt(f"{output_dir}/processed_points.xyz", final_points)
 
             # Save mode assignments
@@ -45,7 +54,8 @@ class StatsCollector:
             'voxels_multimodal': sum(s['multimodal'] for s in all_voxel_stats),
             'high_anomaly_points': sum(s['high_anomaly_points'] for s in all_voxel_stats),
             'low_prob_points': sum(s.get('low_prob_points', 0) for s in all_voxel_stats),
-            'point_strengths': point_strengths
+            'point_strengths': point_strengths,
+            'mode_assignments': mode_assignments
             }
 
                   
