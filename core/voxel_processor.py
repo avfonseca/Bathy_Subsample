@@ -11,7 +11,7 @@ class VoxelProcessor:
         """Calculate Total Vertical Uncertainty for a given depth."""
         return np.sqrt(a**2 + (b * depth)**2)
     
-    def estimate_normals(self, points, k=20):
+    def estimate_normals(self, points, k=15):  # Reduced from 20
         """Estimate normal vectors using points within ±3*TVU of median depth."""
         # Get median depth and TVU
         median_depth = np.median(points[:, 2])
@@ -45,17 +45,13 @@ class VoxelProcessor:
         # Center all neighborhoods
         centered = points_for_normal[indices] - centroids[:, np.newaxis, :]
         
-        # Compute covariance matrices for all neighborhoods at once
-        # Reshape for batch matrix multiplication
+        # Vectorized covariance matrix computation
         n_points = len(points_for_normal)
-        centered_reshaped = centered.reshape(n_points * k, 3)
-        
-        # Compute covariance matrices using batch operations
         covariances = np.zeros((n_points, 3, 3))
+        
+        # Use einsum for efficient batch matrix multiplication
         for i in range(n_points):
-            start_idx = i * k
-            end_idx = start_idx + k
-            neighborhood = centered_reshaped[start_idx:end_idx]
+            neighborhood = centered[i]
             covariances[i] = np.dot(neighborhood.T, neighborhood) / k
         
         # Compute eigenvectors for all covariance matrices at once

@@ -27,7 +27,8 @@ class IsolationGrid:
     def __init__(self, group_size=1000, voxel_x_size=1.0, voxel_y_size=1.0, 
                  anomaly_threshold=0.5, mode_probability_threshold=0.3,
                  min_points_for_mode=3, max_modes=1, verbose=False, 
-                 save_intermediate_files=False, plot_interval=500, best_hypothesis=False, navigation=False):
+                 save_intermediate_files=False, plot_interval=500, best_hypothesis=False, 
+                 navigation=False, enable_caching=False):
         """Initialize the IsolationGrid processor."""
         self.settings = Settings(
             group_size=group_size,
@@ -41,7 +42,8 @@ class IsolationGrid:
             save_intermediate_files=save_intermediate_files,
             plot_interval=plot_interval,
             best_hypothesis=best_hypothesis,
-            navigation=navigation
+            navigation=navigation,
+            enable_caching=enable_caching
         )
         
         self.visualizer = Visualizer(self.settings)
@@ -60,9 +62,12 @@ class IsolationGrid:
         self.point_processor.total_voxels_processed = 0
         os.makedirs(output_dir, exist_ok=True)
         
-        # Set up cache directory for isolation forest models
-        cache_dir = os.path.join(output_dir, "cache")
-        self.point_processor.set_cache_dir(cache_dir)
+        # Set up cache directory for isolation forest models only if caching is enabled
+        if self.settings.enable_caching:
+            cache_dir = os.path.join(output_dir, "cache")
+            self.point_processor.set_cache_dir(cache_dir)
+        else:
+            self.point_processor.set_cache_dir(None)
         
         # Load point cloud
         print("Loading point cloud...")
@@ -99,5 +104,8 @@ class IsolationGrid:
         
         # Print statistics
         self.stats_collector.print_summary_stats(stats)
+        
+        # Print cache statistics if verbose
+        self.point_processor.print_cache_stats()
         
         return final_points, stats

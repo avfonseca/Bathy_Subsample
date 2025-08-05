@@ -10,8 +10,6 @@ import hashlib
 import pickle
 import os
 from joblib import Parallel, delayed
-import tempfile
-import mmap
 warnings.filterwarnings('ignore', category=ConvergenceWarning) #We are already handling convergence warnings in the extract_gmm function
 
 class PointProcessor:
@@ -24,6 +22,8 @@ class PointProcessor:
         self.visualizer = Visualizer(settings)
         self.iforest_cache = {}  # Cache for isolation forest models
         self.cache_dir = None
+        self.cache_hits = 0
+        self.cache_attempts = 0
     
     def set_voxel_processor(self, voxel_processor):
         """Set the voxel processor instance."""
@@ -51,13 +51,16 @@ class PointProcessor:
     
     def _load_cached_iforest(self, cache_key):
         """Load cached isolation forest model."""
-        if not self.cache_dir:
+        if not self.cache_dir or not self.settings.enable_caching:
             return None
+        
+        self.cache_attempts += 1
         
         cache_file = os.path.join(self.cache_dir, f"iforest_{cache_key}.pkl")
         if os.path.exists(cache_file):
             try:
                 with open(cache_file, 'rb') as f:
+                    self.cache_hits += 1
                     return pickle.load(f)
             except:
                 return None
@@ -65,8 +68,16 @@ class PointProcessor:
     
     def _save_cached_iforest(self, cache_key, iforest):
         """Save isolation forest model to cache."""
-        if not self.cache_dir:
+        if not self.cache_dir or not self.settings.enable_caching:
             return
+        
+        # Check cache hit rate - disable if too low
+        if self.cache_attempts > 10:  # Wait for some attempts first
+            hit_rate = self.cache_hits / self.cache_attempts
+            if hit_rate < 0.1:  # Less than 10% hit rate
+                if self.settings.verbose:
+                    print(f"Cache hit rate too low ({hit_rate:.1%}), disabling cache saves")
+                return
         
         cache_file = os.path.join(self.cache_dir, f"iforest_{cache_key}.pkl")
         try:
@@ -180,8 +191,8 @@ class PointProcessor:
         gmm = BayesianGaussianMixture(n_components=n_modes,
                                          covariance_type='spherical',
                                 random_state=42,
-                                max_iter=100,
-                                n_init=5,
+                                max_iter=50,  # Reduced from 100
+                                n_init=3,     # Reduced from 5
                                 init_params='k-means++')
             
         # Fit GMM
@@ -222,17 +233,21 @@ class PointProcessor:
         points_std = np.std(points_for_iforest, axis=0)
         points_for_iforest = (points_for_iforest - points_mean) / points_std
         
-        # Try to load cached model first
-        cache_key = self._get_cache_key(points_for_iforest)
-        iforest = self._load_cached_iforest(cache_key)
+        # Try to load cached model first (only if caching is enabled)
+        iforest = None
+        if self.settings.enable_caching:
+            cache_key = self._get_cache_key(points_for_iforest)
+            iforest = self._load_cached_iforest(cache_key)
         
         if iforest is None:
             # Create new model if not cached
-            sample_size = min(256, len(points))
-            iforest = iso.iForest(points_for_iforest, ntrees=200, sample_size=sample_size)
+            sample_size = min(128, len(points))  # Reduced from 256
+            iforest = iso.iForest(points_for_iforest, ntrees=100, sample_size=sample_size)  # Reduced from 200
             
-            # Cache the model for future use
-            self._save_cached_iforest(cache_key, iforest)
+            # Cache the model for future use (only if caching is enabled)
+            if self.settings.enable_caching:
+                cache_key = self._get_cache_key(points_for_iforest)
+                self._save_cached_iforest(cache_key, iforest)
         
         scores = iforest.compute_paths(X_in=points_for_iforest)
         
@@ -275,99 +290,71 @@ class PointProcessor:
         # Track mode assignments for all voxels
         all_mode_assignments = {}  # Dictionary of all points assigned to each mode
         
-        # Process each voxel
-        for voxel_key, voxel_points in voxel_dict.items():
+        # Process voxels in parallel instead of sequentially
+        parallel_results = self._process_voxels_parallel(voxel_dict, rotation_matrix, mean_point)
+        
+        # Process results from parallel computation
+        for processed_data in parallel_results:
+            voxel_key = processed_data['voxel_key']
+            result = processed_data['result']
+            low_anomaly_points = processed_data['low_anomaly_points']
+            voxel_scores = processed_data['voxel_scores']
+            voxel_points_array = processed_data['voxel_points_array']
+            high_anomaly_points_voxel = processed_data['high_anomaly_points']
             
-            # Unpack points, scores, and indices
-            voxel_points_array = np.array([p[0] for p in voxel_points])
-
-            if(len(voxel_points_array) == 0):
-                continue
-            
-            voxel_scores = np.array([p[1] for p in voxel_points])
-            original_indices = [p[2] for p in voxel_points]
-            
-            # Keep high anomaly points
-            high_anomaly_mask = voxel_scores > self.settings.anomaly_threshold
-            high_anomaly_points_voxel = voxel_points_array[high_anomaly_mask]
-
+            # Handle high anomaly points from parallel processing
             if len(high_anomaly_points_voxel) > 0:
-                high_anomaly_original = np.dot(high_anomaly_points_voxel, rotation_matrix.T) + mean_point
-                high_anomaly_points.extend(high_anomaly_original)
+                high_anomaly_points.extend(high_anomaly_points_voxel)
                 if self.settings.navigation == False:
-                    selected_points.extend(high_anomaly_original)
-                    point_strengths.extend([1] * len(high_anomaly_original))
-                n_high_anomaly += len(high_anomaly_original)
-            
-            # Get low anomaly points
-            low_anomaly_mask = voxel_scores <= self.settings.anomaly_threshold
-            low_anomaly_points = voxel_points_array[low_anomaly_mask]
-            
-            # Skip if no low anomaly points
-            if len(low_anomaly_points) == 0:
-                continue
-            
-            
-            # Extract modes from depth values
-            result = self.extract_all_modes(low_anomaly_points[:, 2])
-            
-
-            if len(result['modes']) == 0:
-                continue
+                    selected_points.extend(high_anomaly_points_voxel)
+                    point_strengths.extend([1] * len(high_anomaly_points_voxel))
+                n_high_anomaly += len(high_anomaly_points_voxel)
             
             # Track voxel category
             if result['type'] == "std":
                 n_voxels_std += 1
-
             elif result['type'] == "unimodal":
                 n_voxels_unimodal += 1
-
             elif result['type'] == "multimodal":
                 n_voxels_multimodal += 1
 
-            
-
             if result['type'] == "std" or result['type'] == "unimodal":
-                    
-                    median = result['modes'][0]['mean']
-                    std_th = result['modes'][0]['std']
+                median = result['modes'][0]['mean']
+                std_th = result['modes'][0]['std']
+                n_extracted_modes += 1
 
-                    n_extracted_modes +=1
+                # Track points belonging to mode (in transformed space)
+                mode_points_dict = {0: []}  # Single mode with index 0
+                
+                # Calculate z-scores for all points
+                z_scores = abs(low_anomaly_points[:, 2] - median)/(std_th + 1e-10)
+                
+                # Store points within threshold
+                mode_mask = z_scores <= self.settings.mode_probability_threshold
+                mode_points_voxel = low_anomaly_points[mode_mask]
+                mode_points_dict[0] = mode_points_voxel.tolist()  # Store ALL points in this mode
+                
+                # Store mode assignments
+                all_mode_assignments[voxel_key] = mode_points_dict
+                
+                # Find and store the representative point for this mode
+                median_point = min(low_anomaly_points, key=lambda p: abs(p[2] - median))
+                median_point_original = np.dot(median_point.reshape(1, -1), rotation_matrix.T) + mean_point
+                mode_representatives.append(median_point_original)  # Store the representative point
+                selected_points.append(median_point_original[0])
+                
+                # Keep points outside std limit
+                mode_str = len(mode_points_dict[0])
+                point_strengths.append(mode_str)
 
-                    # Track points belonging to mode (in transformed space)
-                    mode_points_dict = {0: []}  # Single mode with index 0
-                    
-                    # Calculate z-scores for all points
-                    z_scores = abs(low_anomaly_points[:, 2] - median)/(std_th + 1e-10)
-                    
-                    # Store points within threshold
-                    mode_mask = z_scores <= self.settings.mode_probability_threshold
-                    mode_points_voxel = low_anomaly_points[mode_mask]
-                    mode_points_dict[0] = mode_points_voxel.tolist()  # Store ALL points in this mode
-                    
-                    # Store mode assignments
-                    all_mode_assignments[voxel_key] = mode_points_dict
-                    
-                    # Find and store the representative point for this mode
-                    median_point = min(low_anomaly_points, key=lambda p: abs(p[2] - median))
-                    median_point_original = np.dot(median_point.reshape(1, -1), rotation_matrix.T) + mean_point
-                    mode_representatives.append(median_point_original)  # Store the representative point
-                    selected_points.append(median_point_original[0])
-                    
-                    # Keep points outside std limit
-                    mode_str = len(mode_points_dict[0])
-                    point_strengths.append(mode_str)
-
-                    outside_points = low_anomaly_points[~mode_mask]
-                    
-                    if len(outside_points) > 0:
-                        outside_points_original = np.dot(outside_points, rotation_matrix.T) + mean_point
-                        low_prob_points.extend(outside_points_original)  # Track these points
-                        selected_points.extend(outside_points_original)
-                        n_outliers += len(outside_points)
-                        point_strengths.extend([1] * len(outside_points))
-            
-
+                outside_points = low_anomaly_points[~mode_mask]
+                
+                if len(outside_points) > 0:
+                    outside_points_original = np.dot(outside_points, rotation_matrix.T) + mean_point
+                    low_prob_points.extend(outside_points_original)  # Track these points
+                    selected_points.extend(outside_points_original)
+                    n_outliers += len(outside_points)
+                    point_strengths.extend([1] * len(outside_points))
             
             elif result['type'] == "multimodal": # N > 1
                 medians = np.array([mode['mean'] for mode in result['modes']]).reshape(-1, 1)
@@ -458,6 +445,17 @@ class PointProcessor:
         
         return selected_points, voxel_stats
 
+    def print_cache_stats(self):
+        """Print cache statistics if verbose is enabled."""
+        if self.settings.verbose and self.cache_attempts > 0:
+            hit_rate = self.cache_hits / self.cache_attempts
+            print(f"\nCache Statistics:")
+            print(f"  Cache attempts: {self.cache_attempts}")
+            print(f"  Cache hits: {self.cache_hits}")
+            print(f"  Hit rate: {hit_rate:.1%}")
+            if hit_rate < 0.1 and self.cache_attempts > 10:
+                print(f"  Warning: Low cache hit rate - consider disabling caching")
+    
     def _process_voxel_gmm_parallel(self, voxel_data):
         """Process a single voxel with GMM fitting (for parallel processing)."""
         voxel_key, voxel_points, voxel_scores, rotation_matrix, mean_point = voxel_data
@@ -468,22 +466,21 @@ class PointProcessor:
         if len(voxel_points_array) == 0:
             return None
         
+        # Get high anomaly points
+        high_anomaly_mask = voxel_scores > self.settings.anomaly_threshold
+        high_anomaly_points_voxel = voxel_points_array[high_anomaly_mask]
+        
         # Get low anomaly points
         low_anomaly_mask = voxel_scores <= self.settings.anomaly_threshold
         low_anomaly_points = voxel_points_array[low_anomaly_mask]
         
-        if len(low_anomaly_points) == 0:
-            return None
-        
         # Extract modes from depth values
-        result = self.extract_all_modes(low_anomaly_points[:, 2])
-        
-        if len(result['modes']) == 0:
-            return None
+        result = self.extract_all_modes(low_anomaly_points[:, 2]) if len(low_anomaly_points) > 0 else {'modes': [], 'type': 'empty'}
         
         # Process based on result type
         processed_data = {
             'voxel_key': voxel_key,
+            'high_anomaly_points': np.dot(high_anomaly_points_voxel, rotation_matrix.T) + mean_point if len(high_anomaly_points_voxel) > 0 else np.empty((0, 3)),
             'result': result,
             'low_anomaly_points': low_anomaly_points,
             'rotation_matrix': rotation_matrix,
