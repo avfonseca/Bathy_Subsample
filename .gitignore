@@ -19,13 +19,13 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-*.xyz
+
 
 # Virtual Environment
 venv/
 env/
 ENV/
-
+eif/
 # IDE
 .idea/
 .vscode/
@@ -38,7 +38,10 @@ isolation_forest_results/
 *.jpg
 *.jpeg
 *.pdf
+*.xyz
 
+
+*.xyz
 # Jupyter Notebook
 .ipynb_checkpoints
 
