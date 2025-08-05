@@ -16,15 +16,16 @@ def main():
         voxel_x_size=3.0,
         voxel_y_size=3.0,
         mode_probability_threshold=3,
-        anomaly_threshold=0.7,
+        anomaly_threshold=0.5,
         min_points_for_mode=3,
         max_modes=3,
-        best_hypothesis=True,
+        best_hypothesis=False,
         save_intermediate_files=False,
-        navigation=True
+        navigation=False,
+        enable_caching=False
     )
     
-    final_points, stats = processor.process('norbit.txt')
+    final_points, stats = processor.process('example_points.xyz')
 
 if __name__ == "__main__":
     main()
